@@ -8,7 +8,8 @@
   "scripts": {
     "dev": "tsx src/cli.ts",
     "build": "tsc",
-    "start": "node dist/cli.js"
+    "start": "node dist/cli.js",
+    "test": "tsx --test tests/agenticLoop.test.ts"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

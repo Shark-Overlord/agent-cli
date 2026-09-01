@@ -1,14 +1,13 @@
 import {useRef, useState} from "react";
 
-import {executeTools} from "../core/executeTools.js";
-import {streamMessage} from "../services/api/streaming.js";
-import {getToolsApiParams} from "../tools/index.js";
-import type {
-    Message,
-    StreamResult,
-    ToolUseBlock,
-    UserMessage
-} from "../types/message.js";
+import {
+    DEFAULT_MAX_TURNS,
+    query,
+    type LoopEvent,
+    type LoopResult
+} from "../core/agenticLoop.js";
+import {getEnabledTools} from "../tools/index.js";
+import type {Message, UserMessage} from "../types/message.js";
 
 export interface AgentUsage {
     in: number;
@@ -32,33 +31,65 @@ export function useAgentSession() {
         setMessages(nextMessages);
     }
 
-    async function runModelRound(
-        abort: AbortController
-    ): Promise<StreamResult | null> {
-        let fullText = "";
-        let streamResult: StreamResult | null = null;
+    function handleLoopEvent(event: LoopEvent) {
+        switch (event.type) {
+            case "text":
+                setStreamingText((previous) => previous + event.text);
+                break;
 
-        for await (const event of streamMessage(
-            messagesRef.current,
-            abort.signal,
-            undefined,
-            getToolsApiParams()
-        )) {
-            if (event.type === "text") {
-                fullText += event.text;
-                setStreamingText(fullText);
-            } else if (event.type === "tool_use_start") {
-                setToolStatus(`Tool: ${event.name}`);
-            } else if (event.type === "message_done") {
-                streamResult = event.result;
-                setLastUsage({
-                    in: event.result.usage.inputTokens,
-                    out: event.result.usage.outputTokens
-                });
-            }
+            case "assistant_message":
+                appendMessage(event.message);
+                setStreamingText("");
+                break;
+
+            case "tool_use_start":
+                setToolStatus(`Running ${event.name}`);
+                break;
+
+            case "tool_use_done":
+                if (event.isError) {
+                    setToolStatus(`${event.name} failed`);
+                }
+                break;
+
+            case "tool_result_message":
+                appendMessage(event.message);
+                setToolStatus("");
+                break;
+
+            case "error":
+                setErrorText(event.error.message);
+                break;
+
+            case "turn_complete":
+                if (event.reason === "tool_use") {
+                    setStreamingText("");
+                    setToolStatus("");
+                }
+                break;
         }
+    }
 
-        return streamResult;
+    function applyLoopResult(result: LoopResult) {
+        messagesRef.current = result.messages;
+        setMessages(result.messages);
+        setLastUsage({
+            in: result.usage.inputTokens,
+            out: result.usage.outputTokens
+        });
+
+        if (result.terminationReason === "aborted") {
+            setStreamingText("");
+            setToolStatus("");
+            setErrorText("Generation interrupted.");
+        } else if (result.terminationReason === "model_error") {
+            setStreamingText("");
+            setToolStatus("");
+        } else if (result.terminationReason === "max_turns") {
+            setErrorText(
+                `Agent stopped after reaching ${result.turnCount} turns.`
+            );
+        }
     }
 
     async function runAgentLoop() {
@@ -72,48 +103,22 @@ export function useAgentSession() {
         abortRef.current = abort;
 
         try {
-            while (true) {
-                setStreamingText("");
-                setToolStatus("");
+            const generator = query({
+                messages: messagesRef.current,
+                tools: getEnabledTools(),
+                maxTurns: DEFAULT_MAX_TURNS,
+                abortSignal: abort.signal,
+                cwd: process.cwd()
+            });
 
-                const streamResult = await runModelRound(abort);
-
-                if (!streamResult) {
-                    return;
-                }
-
-                appendMessage(streamResult.assistantMessage);
-                setStreamingText("");
-
-                if (streamResult.stopReason !== "tool_use") {
-                    break;
-                }
-
-                const toolUseBlocks = streamResult.assistantMessage.content.filter(
-                    (block): block is ToolUseBlock => block.type === "tool_use"
-                );
-
-                if (toolUseBlocks.length === 0) {
-                    throw new Error(
-                        "Model stopped for tool_use, but no tool call was found."
-                    );
-                }
-
-                setToolStatus(
-                    toolUseBlocks
-                        .map((block) => `Running ${block.name}`)
-                        .join(", ")
-                );
-
-                const toolResultMessage = await executeTools(toolUseBlocks, {
-                    cwd: process.cwd(),
-                    abortSignal: abort.signal
-                });
-
-                appendMessage(toolResultMessage);
-                setToolStatus("");
+            let next = await generator.next();
+            while (!next.done) {
+                handleLoopEvent(next.value);
+                next = await generator.next();
             }
-        } catch (err: unknown) {
+
+            applyLoopResult(next.value);
+        } catch (error: unknown) {
             if (abort.signal.aborted) {
                 setStreamingText("");
                 setToolStatus("");
@@ -122,9 +127,7 @@ export function useAgentSession() {
             }
 
             setErrorText(
-                err instanceof Error
-                    ? err.message
-                    : "Unknown error"
+                error instanceof Error ? error.message : "Unknown error"
             );
         } finally {
             setIsLoading(false);

@@ -3,14 +3,15 @@ import type {
     ToolUseBlock,
     UserMessage
 } from "../types/message.js";
-import type {ToolContext} from "../tools/Tool.js";
-import {findToolByName} from "../tools/index.js";
+import type {Tool, ToolContext} from "../tools/Tool.js";
+import {getEnabledTools} from "../tools/index.js";
 
 async function executeOneTool(
     block: ToolUseBlock,
-    context: ToolContext
+    context: ToolContext,
+    tools: Tool[]
 ): Promise<ToolResultBlock> {
-    const tool = findToolByName(block.name);
+    const tool = tools.find((candidate) => candidate.name === block.name);
 
     if (!tool) {
         return {
@@ -30,22 +31,36 @@ async function executeOneTool(
         };
     }
 
-    const result = await tool.call(block.input, context);
+    try {
+        const result = await tool.call(block.input, context);
 
-    return {
-        type: "tool_result",
-        tool_use_id: block.id,
-        content: result.content,
-        is_error: result.isError
-    };
+        return {
+            type: "tool_result",
+            tool_use_id: block.id,
+            content: result.content,
+            is_error: result.isError
+        };
+    } catch (error: unknown) {
+        const message = error instanceof Error
+            ? error.message
+            : String(error);
+
+        return {
+            type: "tool_result",
+            tool_use_id: block.id,
+            content: `Tool failed: ${message}`,
+            is_error: true
+        };
+    }
 }
 
 export async function executeTools(
     toolUseBlocks: ToolUseBlock[],
-    context: ToolContext
+    context: ToolContext,
+    tools: Tool[] = getEnabledTools()
 ): Promise<UserMessage> {
     const canRunInParallel = toolUseBlocks.every((block) => {
-        const tool = findToolByName(block.name);
+        const tool = tools.find((candidate) => candidate.name === block.name);
         return tool !== undefined && tool.isEnabled() && tool.isReadOnly();
     });
 
@@ -53,12 +68,12 @@ export async function executeTools(
 
     if (canRunInParallel) {
         results = await Promise.all(
-            toolUseBlocks.map((block) => executeOneTool(block, context))
+            toolUseBlocks.map((block) => executeOneTool(block, context, tools))
         );
     } else {
         results = [];
         for (const block of toolUseBlocks) {
-            results.push(await executeOneTool(block, context));
+            results.push(await executeOneTool(block, context, tools));
         }
     }
 
