@@ -9,7 +9,7 @@
     "dev": "tsx src/cli.ts",
     "build": "tsc",
     "start": "node dist/cli.js",
-    "test": "tsx --test tests/agenticLoop.test.ts"
+    "test": "tsx --test tests/agenticLoop.test.ts tests/tools.test.ts"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

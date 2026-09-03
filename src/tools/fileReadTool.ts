@@ -1,5 +1,5 @@
 import {readFile} from "node:fs/promises";
-import {isAbsolute, relative, resolve} from "node:path";
+import {validatePath} from "../utils/paths.js";
 import type {Tool, ToolContext, ToolResult} from "./Tool.js";
 
 function formatLines(
@@ -71,19 +71,8 @@ export const fileReadTool: Tool = {
             return {content: "limit must be a positive integer", isError: true};
         }
 
-        const absolutePath = isAbsolute(filePath)
-            ? resolve(filePath)
-            : resolve(context.cwd, filePath);
-
-        const relativePath = relative(context.cwd, absolutePath);
-        if (relativePath.startsWith("..") || isAbsolute(relativePath)) {
-            return {
-                content: `Access denied: ${filePath} is outside the working directory`,
-                isError: true
-            };
-        }
-
         try {
+            const absolutePath = await validatePath(filePath, context.cwd);
             const content = await readFile(absolutePath, {
                 encoding: "utf-8",
                 signal: context.abortSignal
